@@ -11,35 +11,27 @@ This script is designed to:
 Usage — Wan 2.2 I2V benchmark
 ==============================
 
-Step 1 — Generate prompt files (downloads images, writes JSONs, then exits):
+Images and prompt files are prepared automatically on first run and reused on
+subsequent runs. Just specify --model and --task:
 
-  # Minimal: uses synthetic images, writes to prompts/wan22_i2v/
+  # Minimal (synthetic images, default paths):
   python3 benchmarks/benchmark_comfyui_serving.py \\
-    --generate-prompts --model wan22 --task i2v \\
-    --num-requests 50
+    --model wan22 --task i2v \\
+    --num-requests 50 --max-concurrency 4
 
   # With model download (needs ComfyUI root):
   python3 benchmarks/benchmark_comfyui_serving.py \\
-    --generate-prompts --model wan22 --task i2v \\
+    --model wan22 --task i2v \\
     --download-models --comfyui-base-dir /path/to/ComfyUI \\
-    --num-requests 50
+    --num-requests 50 --max-concurrency 4
 
-  # Custom image/output dirs (input-dir must be ComfyUI's input/ folder):
+  # Custom paths:
   python3 benchmarks/benchmark_comfyui_serving.py \\
-    --generate-prompts --model wan22 --task i2v \\
+    --model wan22 --task i2v \\
     --input-dir /home/ubuntu/ComfyUI/input \\
     --prompts-dir /home/ubuntu/ComfyUI/benchmarks/prompts/wan22_i2v \\
-    --num-images 30 --num-requests 50
-
-Step 2 — Run the benchmark (point at any one of the generated prompt files):
-
-  python3 benchmarks/benchmark_comfyui_serving.py \\
-    --prompt-file benchmarks/prompts/wan22_i2v/wan22_i2v_prompt_0000.json \\
-    --num-requests 50 \\
-    --max-concurrency 4 \\
+    --num-images 30 --num-requests 50 --max-concurrency 4 \\
     --host http://127.0.0.1:8188
-
-The setup step also prints the exact run command at the end, so you can copy it directly.
 """
 
 from __future__ import annotations
@@ -260,7 +252,6 @@ def generate_prompt_files(
     task: str,
     output_dir: Path,
     input_dir: Path,
-    num_prompts: int = 50,
     num_images: int = 20,
     download_model_weights: bool = False,
     comfyui_base_dir: Path | None = None,
@@ -269,11 +260,11 @@ def generate_prompt_files(
     Full benchmark setup for a given *model*/*task*:
 
       1. Optionally download model weights into *comfyui_base_dir*.
-      2. Prepare input images in *input_dir*.
-      3. Generate *num_prompts* prompt JSON files in *output_dir*, cycling
-         through the available images.
+      2. Prepare input images in *input_dir* (skipped if images already exist).
+      3. Generate one prompt JSON per input image in *output_dir*
+         (skipped if prompt files already exist).
 
-    Returns the list of generated prompt file paths.
+    Returns the list of prompt file paths.
     """
     key = (model, task)
     if key not in _MODEL_REGISTRY:
@@ -286,6 +277,12 @@ def generate_prompt_files(
         if comfyui_base_dir is None:
             raise ValueError("--comfyui-base-dir is required when --download-models is set")
         download_models(comfyui_base_dir, model, task)
+
+    # Skip prompt generation if files already exist.
+    existing = sorted(output_dir.glob(f"{model}_{task}_prompt_*.json"))
+    if existing:
+        print(f"[setup] found {len(existing)} existing prompt files in {output_dir}, skipping generation")
+        return existing
 
     image_filenames = prepare_input_images(
         input_dir,
@@ -301,19 +298,12 @@ def generate_prompt_files(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     generated: list[Path] = []
-    for i in range(num_prompts):
-        image_name = image_filenames[i % len(image_filenames)]
+    for i, image_name in enumerate(image_filenames):
         prompt_path = output_dir / f"{model}_{task}_prompt_{i:04d}.json"
         generate_prompt_file(prompt_path, workflow_path, image_name)
         generated.append(prompt_path)
 
     print(f"[setup] generated {len(generated)} prompt files in {output_dir}")
-    print(f"[setup] example run:")
-    print(
-        f"  python benchmark_comfyui_serving.py"
-        f" --prompt-file {generated[0]}"
-        f" --num-requests {num_prompts}"
-    )
     return generated
 
 
@@ -489,7 +479,7 @@ async def run_request(
     semaphore: asyncio.Semaphore,
     session: aiohttp.ClientSession,
     args: argparse.Namespace,
-    prompt_wrapper_template: dict[str, Any],
+    prompt_templates: list[dict[str, Any]],
 ) -> RequestResult:
     await asyncio.sleep(max(0.0, (start_time + scheduled_offset_s) - time.perf_counter()))
     queued_at = time.perf_counter()
@@ -498,7 +488,7 @@ async def run_request(
         started_at = time.perf_counter()
         prompt_id = None
         try:
-            payload = json.loads(json.dumps(prompt_wrapper_template))
+            payload = json.loads(json.dumps(prompt_templates[idx % len(prompt_templates)]))
             payload.setdefault("extra_data", {})
             payload["client_id"] = args.client_id
 
@@ -597,27 +587,16 @@ def parse_args() -> argparse.Namespace:
         help="Submission endpoint.",
     )
     p.add_argument(
-        "--prompt-file",
-        type=Path,
-        default=None,
-        help="Path to prompt JSON. Required unless --generate-prompts is set.",
-    )
-    p.add_argument(
-        "--generate-prompts",
-        action="store_true",
-        help="Prepare input images and generate prompt JSON files, then exit.",
-    )
-    p.add_argument(
         "--model",
         choices=_VALID_MODELS,
-        default=None,
-        help=f"Model to benchmark. Required with --generate-prompts. Choices: {_VALID_MODELS}.",
+        required=True,
+        help=f"Model to benchmark. Choices: {_VALID_MODELS}.",
     )
     p.add_argument(
         "--task",
         choices=_VALID_TASKS,
-        default=None,
-        help=f"Task type. Required with --generate-prompts. Choices: {_VALID_TASKS}.",
+        required=True,
+        help=f"Task type. Choices: {_VALID_TASKS}.",
     )
     p.add_argument(
         "--input-dir",
@@ -668,9 +647,19 @@ def parse_args() -> argparse.Namespace:
 
 
 async def async_main(args: argparse.Namespace) -> None:
-    if args.prompt_file is None:
-        raise SystemExit("error: --prompt-file is required (or use --generate-prompts to create one)")
-    prompt_template = load_prompt_template(args.prompt_file)
+    prompts_dir = args.prompts_dir or Path("benchmarks/prompts") / f"{args.model}_{args.task}"
+    prompt_paths = generate_prompt_files(
+        model=args.model,
+        task=args.task,
+        output_dir=prompts_dir,
+        input_dir=args.input_dir,
+        num_images=args.num_images,
+        download_model_weights=args.download_models,
+        comfyui_base_dir=args.comfyui_base_dir,
+    )
+    prompt_templates = [load_prompt_template(p) for p in prompt_paths]
+    print(f"[bench] loaded {len(prompt_templates)} prompt templates, round-robining over {args.num_requests} requests")
+
     schedule = build_arrival_schedule(
         num_requests=args.num_requests,
         request_rate=args.request_rate,
@@ -691,7 +680,7 @@ async def async_main(args: argparse.Namespace) -> None:
                     semaphore=semaphore,
                     session=session,
                     args=args,
-                    prompt_wrapper_template=prompt_template,
+                    prompt_templates=prompt_templates,
                 )
             )
             for i in range(args.num_requests)
@@ -714,21 +703,6 @@ async def async_main(args: argparse.Namespace) -> None:
 
 def main() -> None:
     args = parse_args()
-    if args.generate_prompts:
-        if not args.model or not args.task:
-            raise SystemExit("error: --model and --task are required with --generate-prompts")
-        prompts_dir = args.prompts_dir or Path("benchmarks/prompts") / f"{args.model}_{args.task}"
-        generate_prompt_files(
-            model=args.model,
-            task=args.task,
-            output_dir=prompts_dir,
-            input_dir=args.input_dir,
-            num_prompts=args.num_requests,
-            num_images=args.num_images,
-            download_model_weights=args.download_models,
-            comfyui_base_dir=args.comfyui_base_dir,
-        )
-        return
     asyncio.run(async_main(args))
 
 
