@@ -212,14 +212,6 @@ def prepare_input_images(
     Returns a list of image basenames (not full paths).
     """
     input_dir.mkdir(parents=True, exist_ok=True)
-    image_exts = {".png", ".jpg", ".jpeg", ".webp"}
-
-    existing = sorted(
-        p.name for p in input_dir.iterdir() if p.suffix.lower() in image_exts
-    )
-    if existing:
-        print(f"[setup] found {len(existing)} existing images in {input_dir}")
-        return existing
 
     if image_source == "vbench_i2v":
         filenames = _try_download_vbench_i2v(input_dir)
