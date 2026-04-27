@@ -6,6 +6,15 @@ Submits prompts concurrently to a running ComfyUI server and reports
 latency/throughput metrics. Input images and prompt files are prepared
 automatically (and cached for reuse) before the benchmark starts.
 
+On first run the script will:
+  1. Download model weights (if --download-models is set).
+  2. Download the VBench I2V image dataset (requires: pip install gdown),
+     or generate synthetic placeholder images as a fallback.
+  3. Write one prompt JSON per input image under benchmarks/prompts/<model>_<task>/.
+
+On subsequent runs all three steps are skipped if the files already exist.
+Requests are distributed across prompt files in round-robin order.
+
 Supported models / tasks
 ------------------------
   wan22 / i2v   — Wan 2.2 Image-to-Video (LightX2V 4-step, 720×720, 81 frames)
