@@ -912,7 +912,12 @@ class PromptServer():
             queue_info['queue_pending'] = _remove_sensitive_from_queue(current_queue[1])
             return web.json_response(queue_info)
 
-        async def enqueue_prompt(json_data):
+        @routes.post("/prompt")
+        async def post_prompt(request):
+            logging.info("got prompt")
+            json_data =  await request.json()
+            json_data = self.trigger_on_prompt(json_data)
+
             if "number" in json_data:
                 number = float(json_data['number'])
             else:
@@ -961,13 +966,6 @@ class PromptServer():
                     "extra_info": {}
                 }
                 return web.json_response({"error": error, "node_errors": {}}, status=400)
-
-        @routes.post("/prompt")
-        async def post_prompt(request):
-            logging.info("got prompt")
-            json_data =  await request.json()
-            json_data = self.trigger_on_prompt(json_data)
-            return await enqueue_prompt(json_data)
 
         @routes.post("/queue")
         async def post_queue(request):
