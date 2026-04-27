@@ -2,7 +2,7 @@
 """
 Simple serving benchmark client for ComfyUI's HTTP API.
 
-This script is inspired by diffusion serving benchmarks and is designed to:
+This script is designed to:
   - submit prompts to ComfyUI (/prompt or /bench/prompt),
   - optionally shape request arrivals (fixed rate or Poisson),
   - poll completion via /history/{prompt_id},
@@ -15,28 +15,26 @@ Step 1 — Generate prompt files (downloads images, writes JSONs, then exits):
 
   # Minimal: uses synthetic images, writes to prompts/wan22_i2v/
   python3 benchmarks/benchmark_comfyui_serving.py \\
-    --generate-wan22-prompts \\
+    --generate-prompts --model wan22 --task i2v \\
     --num-requests 50
 
   # With model download (needs ComfyUI root):
   python3 benchmarks/benchmark_comfyui_serving.py \\
-    --generate-wan22-prompts \\
-    --download-models \\
-    --comfyui-base-dir /path/to/ComfyUI \\
+    --generate-prompts --model wan22 --task i2v \\
+    --download-models --comfyui-base-dir /path/to/ComfyUI \\
     --num-requests 50
 
-  # Custom image/output dirs (input dir must be ComfyUI's input/ folder):
+  # Custom image/output dirs (input-dir must be ComfyUI's input/ folder):
   python3 benchmarks/benchmark_comfyui_serving.py \\
-    --generate-wan22-prompts \\
-    --wan22-input-dir /home/ubuntu/ComfyUI/input \\
-    --wan22-output-dir /data/prompts/wan22 \\
-    --wan22-num-images 30 \\
-    --num-requests 50
+    --generate-prompts --model wan22 --task i2v \\
+    --input-dir /home/ubuntu/ComfyUI/input \\
+    --prompts-dir /home/ubuntu/ComfyUI/benchmarks/prompts/wan22_i2v \\
+    --num-images 30 --num-requests 50
 
 Step 2 — Run the benchmark (point at any one of the generated prompt files):
 
   python3 benchmarks/benchmark_comfyui_serving.py \\
-    --prompt-file prompts/wan22_i2v/wan22_i2v_prompt_0000.json \\
+    --prompt-file benchmarks/prompts/wan22_i2v/wan22_i2v_prompt_0000.json \\
     --num-requests 50 \\
     --max-concurrency 4 \\
     --host http://127.0.0.1:8188
@@ -64,10 +62,17 @@ import aiohttp
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Wan 2.2 I2V benchmark setup helpers
+# Benchmark setup helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-_WAN22_MODELS: list[tuple[str, str]] = [
+# Workflow JSON files live in benchmarks/workflows/<model>_<task>.json.
+_WORKFLOWS_DIR = Path(__file__).parent / "workflows"
+
+# Placeholder in workflow JSON files that is replaced with the actual image filename.
+_IMAGE_PLACEHOLDER = "__INPUT_IMAGE__"
+
+# Model weight downloads for wan22/i2v.
+_WAN22_I2V_MODELS: list[tuple[str, str]] = [
     (
         "models/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
         "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
@@ -94,175 +99,46 @@ _WAN22_MODELS: list[tuple[str, str]] = [
     ),
 ]
 
-# Placeholder sentinel replaced by generate_prompt_file.
-_IMAGE_PLACEHOLDER = "__INPUT_IMAGE__"
-
-_WAN22_I2V_GRAPH: dict[str, Any] = {
-    "97": {
-        "inputs": {"image": _IMAGE_PLACEHOLDER},
-        "class_type": "LoadImage",
-        "_meta": {"title": "Start Frame Image"},
-    },
-    "108": {
-        "inputs": {
-            "filename_prefix": "video/Wan2.2_image_to_video",
-            "format": "auto",
-            "codec": "auto",
-            "video-preview": "",
-            "video": ["130:117", 0],
-        },
-        "class_type": "SaveVideo",
-        "_meta": {"title": "Save Video"},
-    },
-    "130:105": {
-        "inputs": {
-            "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
-            "type": "wan",
-            "device": "default",
-        },
-        "class_type": "CLIPLoader",
-        "_meta": {"title": "Load CLIP"},
-    },
-    "130:106": {
-        "inputs": {"vae_name": "wan_2.1_vae.safetensors"},
-        "class_type": "VAELoader",
-        "_meta": {"title": "Load VAE"},
-    },
-    "130:107": {
-        "inputs": {
-            "text": "A felt-style little eagle cashier greeting, waving, and smiling at the camera.",
-            "clip": ["130:105", 0],
-        },
-        "class_type": "CLIPTextEncode",
-        "_meta": {"title": "CLIP Text Encode (Positive Prompt)"},
-    },
-    "130:109": {
-        "inputs": {"shift": 5.000000000000001, "model": ["130:126", 0]},
-        "class_type": "ModelSamplingSD3",
-        "_meta": {"title": "ModelSamplingSD3"},
-    },
-    "130:110": {
-        "inputs": {
-            "add_noise": "enable",
-            "noise_seed": 636787045983965,
-            "steps": 4,
-            "cfg": 1,
-            "sampler_name": "euler",
-            "scheduler": "simple",
-            "start_at_step": 0,
-            "end_at_step": 2,
-            "return_with_leftover_noise": "enable",
-            "model": ["130:109", 0],
-            "positive": ["130:128", 0],
-            "negative": ["130:128", 1],
-            "latent_image": ["130:128", 2],
-        },
-        "class_type": "KSamplerAdvanced",
-        "_meta": {"title": "KSampler (Advanced)"},
-    },
-    "130:111": {
-        "inputs": {
-            "add_noise": "disable",
-            "noise_seed": 0,
-            "steps": 4,
-            "cfg": 1,
-            "sampler_name": "euler",
-            "scheduler": "simple",
-            "start_at_step": 2,
-            "end_at_step": 4,
-            "return_with_leftover_noise": "disable",
-            "model": ["130:124", 0],
-            "positive": ["130:128", 0],
-            "negative": ["130:128", 1],
-            "latent_image": ["130:110", 0],
-        },
-        "class_type": "KSamplerAdvanced",
-        "_meta": {"title": "KSampler (Advanced)"},
-    },
-    "130:117": {
-        "inputs": {"fps": 16, "images": ["130:129", 0]},
-        "class_type": "CreateVideo",
-        "_meta": {"title": "Create Video"},
-    },
-    "130:122": {
-        "inputs": {
-            "unet_name": "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
-            "weight_dtype": "default",
-        },
-        "class_type": "UNETLoader",
-        "_meta": {"title": "Load Diffusion Model"},
-    },
-    "130:123": {
-        "inputs": {
-            "unet_name": "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
-            "weight_dtype": "default",
-        },
-        "class_type": "UNETLoader",
-        "_meta": {"title": "Load Diffusion Model"},
-    },
-    "130:124": {
-        "inputs": {"shift": 5.000000000000001, "model": ["130:127", 0]},
-        "class_type": "ModelSamplingSD3",
-        "_meta": {"title": "ModelSamplingSD3"},
-    },
-    "130:125": {
-        "inputs": {
-            "text": (
-                "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，"
-                "JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，"
-                "形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
-            ),
-            "clip": ["130:105", 0],
-        },
-        "class_type": "CLIPTextEncode",
-        "_meta": {"title": "CLIP Text Encode (Negative Prompt)"},
-    },
-    "130:126": {
-        "inputs": {
-            "lora_name": "wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors",
-            "strength_model": 1.0000000000000002,
-            "model": ["130:122", 0],
-        },
-        "class_type": "LoraLoaderModelOnly",
-        "_meta": {"title": "Load LoRA"},
-    },
-    "130:127": {
-        "inputs": {
-            "lora_name": "wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors",
-            "strength_model": 1.0000000000000002,
-            "model": ["130:123", 0],
-        },
-        "class_type": "LoraLoaderModelOnly",
-        "_meta": {"title": "Load LoRA"},
-    },
-    "130:128": {
-        "inputs": {
-            "width": 720,
-            "height": 720,
-            "length": 81,
-            "batch_size": 1,
-            "positive": ["130:107", 0],
-            "negative": ["130:125", 0],
-            "vae": ["130:106", 0],
-            "start_image": ["97", 0],
-        },
-        "class_type": "WanImageToVideo",
-        "_meta": {"title": "WanImageToVideo"},
-    },
-    "130:129": {
-        "inputs": {"samples": ["130:111", 0], "vae": ["130:106", 0]},
-        "class_type": "VAEDecode",
-        "_meta": {"title": "VAE Decode"},
-    },
-}
-
 # Google Drive file IDs from VBench's vbench2_beta_i2v/download_data.sh
 _VBENCH_ORIGIN_ZIP_GDRIVE_ID = "1qhkLCSBkzll0dkKpwlDTwLL0nxdQ4nrY"
 
+# Registry mapping (model, task) → benchmark configuration.
+# To add a new model/task: drop a workflow JSON in benchmarks/workflows/ and
+# add an entry here.
+_MODEL_REGISTRY: dict[tuple[str, str], dict[str, Any]] = {
+    ("wan22", "i2v"): {
+        "workflow_file": "wan22_i2v.json",
+        "model_files": _WAN22_I2V_MODELS,
+        "image_source": "vbench_i2v",
+    },
+}
 
-def download_wan22_models(base_dir: Path) -> None:
-    """Download Wan 2.2 I2V model files into *base_dir* using wget."""
-    for rel_path, url in _WAN22_MODELS:
+_VALID_MODELS = sorted({m for m, _ in _MODEL_REGISTRY})
+_VALID_TASKS = sorted({t for _, t in _MODEL_REGISTRY})
+
+
+def _replace_in_graph(obj: Any, placeholder: str, value: str) -> None:
+    """Recursively replace every occurrence of *placeholder* with *value* in-place."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if v == placeholder:
+                obj[k] = value
+            else:
+                _replace_in_graph(v, placeholder, value)
+    elif isinstance(obj, list):
+        for i, item in enumerate(obj):
+            if item == placeholder:
+                obj[i] = value
+            else:
+                _replace_in_graph(item, placeholder, value)
+
+
+def download_models(base_dir: Path, model: str, task: str) -> None:
+    """Download model weights for *model*/*task* into *base_dir* using wget."""
+    key = (model, task)
+    if key not in _MODEL_REGISTRY:
+        raise ValueError(f"No model files registered for {model}/{task}")
+    for rel_path, url in _MODEL_REGISTRY[key]["model_files"]:
         dest = base_dir / rel_path
         if dest.exists():
             print(f"[setup] already exists, skipping: {dest}")
@@ -328,13 +204,17 @@ def _generate_synthetic_images(input_dir: Path, num_images: int) -> list[str]:
     return filenames
 
 
-def prepare_input_images(input_dir: Path, num_images: int = 20) -> list[str]:
+def prepare_input_images(
+    input_dir: Path,
+    num_images: int = 20,
+    image_source: str = "vbench_i2v",
+) -> list[str]:
     """
     Prepare benchmark input images in *input_dir*.
 
     Priority:
       1. Reuse any images already present in the directory.
-      2. Download Vchitect/VBench_I2V dataset via huggingface_hub.
+      2. Fetch from the source specified by *image_source* (e.g. "vbench_i2v").
       3. Generate synthetic 720×720 white PNG placeholders with Pillow.
 
     Returns a list of image basenames (not full paths).
@@ -349,9 +229,10 @@ def prepare_input_images(input_dir: Path, num_images: int = 20) -> list[str]:
         print(f"[setup] found {len(existing)} existing images in {input_dir}")
         return existing
 
-    filenames = _try_download_vbench_i2v(input_dir)
-    if filenames:
-        return filenames
+    if image_source == "vbench_i2v":
+        filenames = _try_download_vbench_i2v(input_dir)
+        if filenames:
+            return filenames
 
     print(f"[setup] generating {num_images} synthetic 720×720 placeholder images ...")
     return _generate_synthetic_images(input_dir, num_images)
@@ -359,57 +240,71 @@ def prepare_input_images(input_dir: Path, num_images: int = 20) -> list[str]:
 
 def generate_prompt_file(
     output_path: Path,
+    workflow_path: Path,
     image_filename: str,
-    positive_prompt: str | None = None,
 ) -> None:
     """
-    Write a single Wan 2.2 I2V ComfyUI prompt JSON to *output_path*.
+    Write a single ComfyUI prompt JSON to *output_path* from *workflow_path*.
 
-    *image_filename* is substituted into the LoadImage node (node "97").
-    *positive_prompt* overrides the default positive text if provided.
+    Replaces every occurrence of the sentinel string "__INPUT_IMAGE__" in the
+    workflow graph with *image_filename*.
     """
-    graph: dict[str, Any] = json.loads(json.dumps(_WAN22_I2V_GRAPH))
-    graph["97"]["inputs"]["image"] = image_filename
-    if positive_prompt is not None:
-        graph["130:107"]["inputs"]["text"] = positive_prompt
-
+    graph: dict[str, Any] = json.loads(workflow_path.read_text())
+    _replace_in_graph(graph, _IMAGE_PLACEHOLDER, image_filename)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps({"prompt": graph}, indent=2))
 
 
 def generate_prompt_files(
+    model: str,
+    task: str,
     output_dir: Path,
     input_dir: Path,
     num_prompts: int = 50,
     num_images: int = 20,
-    download_models: bool = False,
+    download_model_weights: bool = False,
     comfyui_base_dir: Path | None = None,
 ) -> list[Path]:
     """
-    Full Wan 2.2 I2V benchmark setup:
+    Full benchmark setup for a given *model*/*task*:
 
       1. Optionally download model weights into *comfyui_base_dir*.
-      2. Prepare input images in *input_dir* (VBench I2V or synthetic).
+      2. Prepare input images in *input_dir*.
       3. Generate *num_prompts* prompt JSON files in *output_dir*, cycling
          through the available images.
 
     Returns the list of generated prompt file paths.
     """
-    if download_models:
+    key = (model, task)
+    if key not in _MODEL_REGISTRY:
+        available = ", ".join(f"{m}/{t}" for m, t in _MODEL_REGISTRY)
+        raise ValueError(f"Unknown --model {model!r} --task {task!r}. Available: {available}")
+
+    cfg = _MODEL_REGISTRY[key]
+
+    if download_model_weights:
         if comfyui_base_dir is None:
             raise ValueError("--comfyui-base-dir is required when --download-models is set")
-        download_wan22_models(comfyui_base_dir)
+        download_models(comfyui_base_dir, model, task)
 
-    image_filenames = prepare_input_images(input_dir, num_images=num_images)
+    image_filenames = prepare_input_images(
+        input_dir,
+        num_images=num_images,
+        image_source=cfg.get("image_source", "synthetic"),
+    )
     if not image_filenames:
         raise RuntimeError(f"No input images available in {input_dir}")
+
+    workflow_path = _WORKFLOWS_DIR / cfg["workflow_file"]
+    if not workflow_path.exists():
+        raise FileNotFoundError(f"Workflow file not found: {workflow_path}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     generated: list[Path] = []
     for i in range(num_prompts):
         image_name = image_filenames[i % len(image_filenames)]
-        prompt_path = output_dir / f"wan22_i2v_prompt_{i:04d}.json"
-        generate_prompt_file(prompt_path, image_name)
+        prompt_path = output_dir / f"{model}_{task}_prompt_{i:04d}.json"
+        generate_prompt_file(prompt_path, workflow_path, image_name)
         generated.append(prompt_path)
 
     print(f"[setup] generated {len(generated)} prompt files in {output_dir}")
@@ -705,35 +600,47 @@ def parse_args() -> argparse.Namespace:
         "--prompt-file",
         type=Path,
         default=None,
-        help="Path to prompt JSON. Required unless --generate-wan22-prompts is set.",
+        help="Path to prompt JSON. Required unless --generate-prompts is set.",
     )
     p.add_argument(
-        "--generate-wan22-prompts",
+        "--generate-prompts",
         action="store_true",
-        help="Generate Wan 2.2 I2V prompt files (steps: prepare images, write JSONs) then exit.",
+        help="Prepare input images and generate prompt JSON files, then exit.",
     )
     p.add_argument(
-        "--wan22-input-dir",
+        "--model",
+        choices=_VALID_MODELS,
+        default=None,
+        help=f"Model to benchmark. Required with --generate-prompts. Choices: {_VALID_MODELS}.",
+    )
+    p.add_argument(
+        "--task",
+        choices=_VALID_TASKS,
+        default=None,
+        help=f"Task type. Required with --generate-prompts. Choices: {_VALID_TASKS}.",
+    )
+    p.add_argument(
+        "--input-dir",
         type=Path,
         default=Path("input"),
-        help="Directory for benchmark input images. Must be ComfyUI's input/ folder so LoadImage can find them (default: input/).",
+        help="ComfyUI input image directory (default: input/). LoadImage resolves files from this folder.",
     )
     p.add_argument(
-        "--wan22-output-dir",
+        "--prompts-dir",
         type=Path,
-        default=Path("prompts/wan22_i2v"),
-        help="Directory where generated prompt JSON files are written (default: prompts/wan22_i2v/).",
+        default=None,
+        help="Directory where generated prompt JSON files are written (default: benchmarks/prompts/<model>_<task>/).",
     )
     p.add_argument(
-        "--wan22-num-images",
+        "--num-images",
         type=int,
         default=20,
-        help="Number of synthetic images to generate when VBench download is unavailable (default: 20).",
+        help="Number of synthetic images to generate when dataset download is unavailable (default: 20).",
     )
     p.add_argument(
         "--download-models",
         action="store_true",
-        help="Download Wan 2.2 model weights before generating prompts (requires --comfyui-base-dir).",
+        help="Download model weights before generating prompts (requires --comfyui-base-dir).",
     )
     p.add_argument(
         "--comfyui-base-dir",
@@ -762,7 +669,7 @@ def parse_args() -> argparse.Namespace:
 
 async def async_main(args: argparse.Namespace) -> None:
     if args.prompt_file is None:
-        raise SystemExit("error: --prompt-file is required (or use --generate-wan22-prompts to create one)")
+        raise SystemExit("error: --prompt-file is required (or use --generate-prompts to create one)")
     prompt_template = load_prompt_template(args.prompt_file)
     schedule = build_arrival_schedule(
         num_requests=args.num_requests,
@@ -807,13 +714,18 @@ async def async_main(args: argparse.Namespace) -> None:
 
 def main() -> None:
     args = parse_args()
-    if args.generate_wan22_prompts:
+    if args.generate_prompts:
+        if not args.model or not args.task:
+            raise SystemExit("error: --model and --task are required with --generate-prompts")
+        prompts_dir = args.prompts_dir or Path("benchmarks/prompts") / f"{args.model}_{args.task}"
         generate_prompt_files(
-            output_dir=args.wan22_output_dir,
-            input_dir=args.wan22_input_dir,
+            model=args.model,
+            task=args.task,
+            output_dir=prompts_dir,
+            input_dir=args.input_dir,
             num_prompts=args.num_requests,
-            num_images=args.wan22_num_images,
-            download_models=args.download_models,
+            num_images=args.num_images,
+            download_model_weights=args.download_models,
             comfyui_base_dir=args.comfyui_base_dir,
         )
         return
