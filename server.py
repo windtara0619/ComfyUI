@@ -16,6 +16,7 @@ import struct
 import ssl
 import socket
 import ipaddress
+import threading
 from PIL import Image, ImageOps
 from PIL.PngImagePlugin import PngInfo
 from io import BytesIO
@@ -252,6 +253,17 @@ class PromptServer():
         self.client_id = None
 
         self.on_prompt_handlers = []
+        self._benchmark_lock = threading.Lock()
+        self._benchmark_stats = {
+            "requests_total": 0,
+            "requests_success": 0,
+            "requests_error": 0,
+            "latency_ms_total": 0.0,
+            "latency_ms_max": 0.0,
+            "queue_wait_ms_total": 0.0,
+            "queue_wait_ms_max": 0.0,
+            "last_prompt_id": None,
+        }
 
         @routes.get('/ws')
         async def websocket_handler(request):
@@ -912,12 +924,17 @@ class PromptServer():
             queue_info['queue_pending'] = _remove_sensitive_from_queue(current_queue[1])
             return web.json_response(queue_info)
 
-        @routes.post("/prompt")
-        async def post_prompt(request):
-            logging.info("got prompt")
-            json_data =  await request.json()
-            json_data = self.trigger_on_prompt(json_data)
+        @routes.get("/bench/stats")
+        async def get_bench_stats(request):
+            stats = self.get_benchmark_stats()
+            return web.json_response(stats)
 
+        @routes.post("/bench/reset")
+        async def reset_bench_stats(request):
+            self.reset_benchmark_stats()
+            return web.json_response({"status": "ok"})
+
+        async def enqueue_prompt(json_data):
             if "number" in json_data:
                 number = float(json_data['number'])
             else:
@@ -966,6 +983,22 @@ class PromptServer():
                     "extra_info": {}
                 }
                 return web.json_response({"error": error, "node_errors": {}}, status=400)
+
+        @routes.post("/bench/prompt")
+        async def post_bench_prompt(request):
+            json_data = await request.json()
+            json_data = self.trigger_on_prompt(json_data)
+            extra_data = json_data.setdefault("extra_data", {})
+            extra_data["benchmark_server_only"] = True
+            extra_data.setdefault("preview_method", "none")
+            return await enqueue_prompt(json_data)
+
+        @routes.post("/prompt")
+        async def post_prompt(request):
+            logging.info("got prompt")
+            json_data =  await request.json()
+            json_data = self.trigger_on_prompt(json_data)
+            return await enqueue_prompt(json_data)
 
         @routes.post("/queue")
         async def post_queue(request):
@@ -1110,6 +1143,41 @@ class PromptServer():
         exec_info['queue_remaining'] = self.prompt_queue.get_tasks_remaining()
         prompt_info['exec_info'] = exec_info
         return prompt_info
+
+    def reset_benchmark_stats(self):
+        with self._benchmark_lock:
+            self._benchmark_stats = {
+                "requests_total": 0,
+                "requests_success": 0,
+                "requests_error": 0,
+                "latency_ms_total": 0.0,
+                "latency_ms_max": 0.0,
+                "queue_wait_ms_total": 0.0,
+                "queue_wait_ms_max": 0.0,
+                "last_prompt_id": None,
+            }
+
+    def record_benchmark_result(self, prompt_id, success, latency_ms, queue_wait_ms=0.0):
+        with self._benchmark_lock:
+            self._benchmark_stats["requests_total"] += 1
+            if success:
+                self._benchmark_stats["requests_success"] += 1
+            else:
+                self._benchmark_stats["requests_error"] += 1
+            self._benchmark_stats["latency_ms_total"] += max(0.0, latency_ms)
+            self._benchmark_stats["queue_wait_ms_total"] += max(0.0, queue_wait_ms)
+            self._benchmark_stats["latency_ms_max"] = max(self._benchmark_stats["latency_ms_max"], max(0.0, latency_ms))
+            self._benchmark_stats["queue_wait_ms_max"] = max(self._benchmark_stats["queue_wait_ms_max"], max(0.0, queue_wait_ms))
+            self._benchmark_stats["last_prompt_id"] = prompt_id
+
+    def get_benchmark_stats(self):
+        with self._benchmark_lock:
+            stats = dict(self._benchmark_stats)
+
+        total = stats["requests_total"]
+        stats["latency_ms_avg"] = (stats["latency_ms_total"] / total) if total > 0 else 0.0
+        stats["queue_wait_ms_avg"] = (stats["queue_wait_ms_total"] / total) if total > 0 else 0.0
+        return stats
 
     async def send(self, event, data, sid=None):
         if event == BinaryEventTypes.UNENCODED_PREVIEW_IMAGE:
