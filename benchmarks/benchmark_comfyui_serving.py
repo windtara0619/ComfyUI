@@ -599,12 +599,6 @@ def parse_args() -> argparse.Namespace:
         help=f"Task type. Choices: {_VALID_TASKS}.",
     )
     p.add_argument(
-        "--input-dir",
-        type=Path,
-        default=Path("input"),
-        help="ComfyUI input image directory (default: input/). LoadImage resolves files from this folder.",
-    )
-    p.add_argument(
         "--prompts-dir",
         type=Path,
         default=None,
@@ -652,7 +646,7 @@ async def async_main(args: argparse.Namespace) -> None:
         model=args.model,
         task=args.task,
         output_dir=prompts_dir,
-        input_dir=args.input_dir,
+        input_dir=Path("input"),
         num_images=args.num_images,
         download_model_weights=args.download_models,
         comfyui_base_dir=args.comfyui_base_dir,
