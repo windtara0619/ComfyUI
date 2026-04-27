@@ -170,7 +170,9 @@ def _try_download_vbench_i2v(input_dir: Path) -> list[str]:
 
     image_exts = {".png", ".jpg", ".jpeg", ".webp"}
     filenames = sorted(
-        p.name for p in input_dir.rglob("*") if p.suffix.lower() in image_exts
+        p.relative_to(input_dir).as_posix()
+        for p in input_dir.rglob("*")
+        if p.suffix.lower() in image_exts
     )
     print(f"[setup] prepared {len(filenames)} VBench I2V images in {input_dir}")
     return filenames
