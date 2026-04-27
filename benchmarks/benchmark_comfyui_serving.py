@@ -1,36 +1,27 @@
 #!/usr/bin/env python3
 """
-Simple serving benchmark client for ComfyUI's HTTP API.
+ComfyUI model serving benchmark.
 
-This script is designed to:
-  - submit prompts to ComfyUI (/prompt or /bench/prompt),
-  - optionally shape request arrivals (fixed rate or Poisson),
-  - poll completion via /history/{prompt_id},
-  - report latency/throughput/error metrics.
+Submits prompts concurrently to a running ComfyUI server and reports
+latency/throughput metrics. Input images and prompt files are prepared
+automatically (and cached for reuse) before the benchmark starts.
 
-Usage — Wan 2.2 I2V benchmark
-==============================
+Supported models / tasks
+------------------------
+  wan22 / i2v   — Wan 2.2 Image-to-Video (LightX2V 4-step, 720×720, 81 frames)
 
-Images and prompt files are prepared automatically on first run and reused on
-subsequent runs. Just specify --model and --task:
-
-  # Minimal (synthetic images, default paths):
+Usage
+-----
   python3 benchmarks/benchmark_comfyui_serving.py \\
     --model wan22 --task i2v \\
-    --num-requests 50 --max-concurrency 4
+    --num-requests 50 --max-concurrency 4 \\
+    --host http://127.0.0.1:8188
 
-  # With model download (needs ComfyUI root):
+  # Also download model weights (run from ComfyUI root):
   python3 benchmarks/benchmark_comfyui_serving.py \\
     --model wan22 --task i2v \\
     --download-models --comfyui-base-dir /path/to/ComfyUI \\
-    --num-requests 50 --max-concurrency 4
-
-  # Custom paths:
-  python3 benchmarks/benchmark_comfyui_serving.py \\
-    --model wan22 --task i2v \\
-    --input-dir /home/ubuntu/ComfyUI/input \\
-    --prompts-dir /home/ubuntu/ComfyUI/benchmarks/prompts/wan22_i2v \\
-    --num-images 30 --num-requests 50 --max-concurrency 4 \\
+    --num-requests 50 --max-concurrency 4 \\
     --host http://127.0.0.1:8188
 """
 
