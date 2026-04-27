@@ -256,9 +256,8 @@ _WAN22_I2V_GRAPH: dict[str, Any] = {
     },
 }
 
-_VBENCH_I2V_JSON_URL = (
-    "https://raw.githubusercontent.com/Vchitect/VBench/master/vbench2_beta_i2v/i2v-bench-info.json"
-)
+# Google Drive file IDs from VBench's vbench2_beta_i2v/download_data.sh
+_VBENCH_ORIGIN_ZIP_GDRIVE_ID = "1qhkLCSBkzll0dkKpwlDTwLL0nxdQ4nrY"
 
 
 def download_wan22_models(base_dir: Path) -> None:
@@ -275,41 +274,36 @@ def download_wan22_models(base_dir: Path) -> None:
 
 def _try_download_vbench_i2v(input_dir: Path) -> list[str]:
     """
-    Attempt to fetch VBench I2V images via huggingface_hub.
+    Download VBench I2V origin images from Google Drive via gdown (pip install gdown).
     Returns image basenames placed in *input_dir*, or [] on failure.
     """
     try:
-        from huggingface_hub import snapshot_download  # type: ignore
+        import gdown  # type: ignore
     except ImportError:
-        print("[setup] huggingface_hub not available; skipping VBench download.")
+        print("[setup] gdown not available; skipping VBench download. Install with: pip install gdown")
         return []
 
+    import zipfile
+
+    zip_path = input_dir / "origin.zip"
     try:
-        print("[setup] downloading Vchitect/VBench_I2V dataset from HuggingFace ...")
-        cache_dir = input_dir / "_vbench_cache"
-        local = snapshot_download(
-            repo_id="Vchitect/VBench_I2V",
-            repo_type="dataset",
-            local_dir=str(cache_dir),
-        )
+        if not zip_path.exists():
+            print("[setup] downloading VBench I2V origin images from Google Drive ...")
+            gdown.download(id=_VBENCH_ORIGIN_ZIP_GDRIVE_ID, output=str(zip_path), quiet=False)
+        print("[setup] extracting origin.zip ...")
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(str(input_dir))
+        zip_path.unlink()
     except Exception as exc:
         print(f"[setup] VBench I2V download failed: {exc}")
+        if zip_path.exists():
+            zip_path.unlink()
         return []
 
     image_exts = {".png", ".jpg", ".jpeg", ".webp"}
-    found = sorted(p for p in Path(local).rglob("*") if p.suffix.lower() in image_exts)
-    if not found:
-        return []
-
-    import shutil
-
-    filenames: list[str] = []
-    for src in found:
-        dest = input_dir / src.name
-        if not dest.exists():
-            shutil.copy2(str(src), str(dest))
-        filenames.append(src.name)
-
+    filenames = sorted(
+        p.name for p in input_dir.rglob("*") if p.suffix.lower() in image_exts
+    )
     print(f"[setup] prepared {len(filenames)} VBench I2V images in {input_dir}")
     return filenames
 
