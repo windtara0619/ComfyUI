@@ -7,6 +7,41 @@ This script is inspired by diffusion serving benchmarks and is designed to:
   - optionally shape request arrivals (fixed rate or Poisson),
   - poll completion via /history/{prompt_id},
   - report latency/throughput/error metrics.
+
+Usage — Wan 2.2 I2V benchmark
+==============================
+
+Step 1 — Generate prompt files (downloads images, writes JSONs, then exits):
+
+  # Minimal: uses synthetic images, writes to prompts/wan22_i2v/
+  python3 benchmarks/benchmark_comfyui_serving.py \\
+    --generate-wan22-prompts \\
+    --num-requests 50
+
+  # With model download (needs ComfyUI root):
+  python3 benchmarks/benchmark_comfyui_serving.py \\
+    --generate-wan22-prompts \\
+    --download-models \\
+    --comfyui-base-dir /path/to/ComfyUI \\
+    --num-requests 50
+
+  # Custom image/output dirs:
+  python3 benchmarks/benchmark_comfyui_serving.py \\
+    --generate-wan22-prompts \\
+    --wan22-input-dir /data/images \\
+    --wan22-output-dir /data/prompts/wan22 \\
+    --wan22-num-images 30 \\
+    --num-requests 50
+
+Step 2 — Run the benchmark (point at any one of the generated prompt files):
+
+  python3 benchmarks/benchmark_comfyui_serving.py \\
+    --prompt-file prompts/wan22_i2v/wan22_i2v_prompt_0000.json \\
+    --num-requests 50 \\
+    --max-concurrency 4 \\
+    --host http://127.0.0.1:8188
+
+The setup step also prints the exact run command at the end, so you can copy it directly.
 """
 
 from __future__ import annotations
@@ -17,13 +52,383 @@ import json
 import math
 import random
 import statistics
+import subprocess
 import time
+import urllib.request
 import uuid
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Any
 
 import aiohttp
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Wan 2.2 I2V benchmark setup helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+_WAN22_MODELS: list[tuple[str, str]] = [
+    (
+        "models/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+        "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+    ),
+    (
+        "models/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+        "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+    ),
+    (
+        "models/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors",
+        "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors",
+    ),
+    (
+        "models/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors",
+        "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors",
+    ),
+    (
+        "models/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+        "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+    ),
+    (
+        "models/vae/wan_2.1_vae.safetensors",
+        "https://huggingface.co/Comfy-Org/Wan_2.2_ComfyUI_Repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors",
+    ),
+]
+
+# Placeholder sentinel replaced by generate_prompt_file.
+_IMAGE_PLACEHOLDER = "__INPUT_IMAGE__"
+
+_WAN22_I2V_GRAPH: dict[str, Any] = {
+    "97": {
+        "inputs": {"image": _IMAGE_PLACEHOLDER},
+        "class_type": "LoadImage",
+        "_meta": {"title": "Start Frame Image"},
+    },
+    "108": {
+        "inputs": {
+            "filename_prefix": "video/Wan2.2_image_to_video",
+            "format": "auto",
+            "codec": "auto",
+            "video-preview": "",
+            "video": ["130:117", 0],
+        },
+        "class_type": "SaveVideo",
+        "_meta": {"title": "Save Video"},
+    },
+    "130:105": {
+        "inputs": {
+            "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+            "type": "wan",
+            "device": "default",
+        },
+        "class_type": "CLIPLoader",
+        "_meta": {"title": "Load CLIP"},
+    },
+    "130:106": {
+        "inputs": {"vae_name": "wan_2.1_vae.safetensors"},
+        "class_type": "VAELoader",
+        "_meta": {"title": "Load VAE"},
+    },
+    "130:107": {
+        "inputs": {
+            "text": "A felt-style little eagle cashier greeting, waving, and smiling at the camera.",
+            "clip": ["130:105", 0],
+        },
+        "class_type": "CLIPTextEncode",
+        "_meta": {"title": "CLIP Text Encode (Positive Prompt)"},
+    },
+    "130:109": {
+        "inputs": {"shift": 5.000000000000001, "model": ["130:126", 0]},
+        "class_type": "ModelSamplingSD3",
+        "_meta": {"title": "ModelSamplingSD3"},
+    },
+    "130:110": {
+        "inputs": {
+            "add_noise": "enable",
+            "noise_seed": 636787045983965,
+            "steps": 4,
+            "cfg": 1,
+            "sampler_name": "euler",
+            "scheduler": "simple",
+            "start_at_step": 0,
+            "end_at_step": 2,
+            "return_with_leftover_noise": "enable",
+            "model": ["130:109", 0],
+            "positive": ["130:128", 0],
+            "negative": ["130:128", 1],
+            "latent_image": ["130:128", 2],
+        },
+        "class_type": "KSamplerAdvanced",
+        "_meta": {"title": "KSampler (Advanced)"},
+    },
+    "130:111": {
+        "inputs": {
+            "add_noise": "disable",
+            "noise_seed": 0,
+            "steps": 4,
+            "cfg": 1,
+            "sampler_name": "euler",
+            "scheduler": "simple",
+            "start_at_step": 2,
+            "end_at_step": 4,
+            "return_with_leftover_noise": "disable",
+            "model": ["130:124", 0],
+            "positive": ["130:128", 0],
+            "negative": ["130:128", 1],
+            "latent_image": ["130:110", 0],
+        },
+        "class_type": "KSamplerAdvanced",
+        "_meta": {"title": "KSampler (Advanced)"},
+    },
+    "130:117": {
+        "inputs": {"fps": 16, "images": ["130:129", 0]},
+        "class_type": "CreateVideo",
+        "_meta": {"title": "Create Video"},
+    },
+    "130:122": {
+        "inputs": {
+            "unet_name": "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+            "weight_dtype": "default",
+        },
+        "class_type": "UNETLoader",
+        "_meta": {"title": "Load Diffusion Model"},
+    },
+    "130:123": {
+        "inputs": {
+            "unet_name": "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+            "weight_dtype": "default",
+        },
+        "class_type": "UNETLoader",
+        "_meta": {"title": "Load Diffusion Model"},
+    },
+    "130:124": {
+        "inputs": {"shift": 5.000000000000001, "model": ["130:127", 0]},
+        "class_type": "ModelSamplingSD3",
+        "_meta": {"title": "ModelSamplingSD3"},
+    },
+    "130:125": {
+        "inputs": {
+            "text": (
+                "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，"
+                "JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，"
+                "形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走"
+            ),
+            "clip": ["130:105", 0],
+        },
+        "class_type": "CLIPTextEncode",
+        "_meta": {"title": "CLIP Text Encode (Negative Prompt)"},
+    },
+    "130:126": {
+        "inputs": {
+            "lora_name": "wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors",
+            "strength_model": 1.0000000000000002,
+            "model": ["130:122", 0],
+        },
+        "class_type": "LoraLoaderModelOnly",
+        "_meta": {"title": "Load LoRA"},
+    },
+    "130:127": {
+        "inputs": {
+            "lora_name": "wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors",
+            "strength_model": 1.0000000000000002,
+            "model": ["130:123", 0],
+        },
+        "class_type": "LoraLoaderModelOnly",
+        "_meta": {"title": "Load LoRA"},
+    },
+    "130:128": {
+        "inputs": {
+            "width": 720,
+            "height": 720,
+            "length": 81,
+            "batch_size": 1,
+            "positive": ["130:107", 0],
+            "negative": ["130:125", 0],
+            "vae": ["130:106", 0],
+            "start_image": ["97", 0],
+        },
+        "class_type": "WanImageToVideo",
+        "_meta": {"title": "WanImageToVideo"},
+    },
+    "130:129": {
+        "inputs": {"samples": ["130:111", 0], "vae": ["130:106", 0]},
+        "class_type": "VAEDecode",
+        "_meta": {"title": "VAE Decode"},
+    },
+}
+
+_VBENCH_I2V_JSON_URL = (
+    "https://raw.githubusercontent.com/Vchitect/VBench/master/vbench2_beta_i2v/i2v-bench-info.json"
+)
+
+
+def download_wan22_models(base_dir: Path) -> None:
+    """Download Wan 2.2 I2V model files into *base_dir* using wget."""
+    for rel_path, url in _WAN22_MODELS:
+        dest = base_dir / rel_path
+        if dest.exists():
+            print(f"[setup] already exists, skipping: {dest}")
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        print(f"[setup] downloading {dest.name} ...")
+        subprocess.run(["wget", "-O", str(dest), url], check=True)
+
+
+def _try_download_vbench_i2v(input_dir: Path) -> list[str]:
+    """
+    Attempt to fetch VBench I2V images via huggingface_hub.
+    Returns image basenames placed in *input_dir*, or [] on failure.
+    """
+    try:
+        from huggingface_hub import snapshot_download  # type: ignore
+    except ImportError:
+        print("[setup] huggingface_hub not available; skipping VBench download.")
+        return []
+
+    try:
+        print("[setup] downloading Vchitect/VBench_I2V dataset from HuggingFace ...")
+        cache_dir = input_dir / "_vbench_cache"
+        local = snapshot_download(
+            repo_id="Vchitect/VBench_I2V",
+            repo_type="dataset",
+            local_dir=str(cache_dir),
+        )
+    except Exception as exc:
+        print(f"[setup] VBench I2V download failed: {exc}")
+        return []
+
+    image_exts = {".png", ".jpg", ".jpeg", ".webp"}
+    found = sorted(p for p in Path(local).rglob("*") if p.suffix.lower() in image_exts)
+    if not found:
+        return []
+
+    import shutil
+
+    filenames: list[str] = []
+    for src in found:
+        dest = input_dir / src.name
+        if not dest.exists():
+            shutil.copy2(str(src), str(dest))
+        filenames.append(src.name)
+
+    print(f"[setup] prepared {len(filenames)} VBench I2V images in {input_dir}")
+    return filenames
+
+
+def _generate_synthetic_images(input_dir: Path, num_images: int) -> list[str]:
+    """Generate synthetic 720×720 white PNG placeholders; returns filenames."""
+    try:
+        from PIL import Image as PILImage  # type: ignore
+    except ImportError:
+        raise RuntimeError(
+            "Pillow is required for synthetic image generation. "
+            "Install it with: pip install Pillow"
+        )
+
+    filenames: list[str] = []
+    for i in range(num_images):
+        fname = f"benchmark_input_{i:04d}.png"
+        dest = input_dir / fname
+        if not dest.exists():
+            PILImage.new("RGB", (720, 720), color=(255, 255, 255)).save(str(dest))
+        filenames.append(fname)
+    return filenames
+
+
+def prepare_input_images(input_dir: Path, num_images: int = 20) -> list[str]:
+    """
+    Prepare benchmark input images in *input_dir*.
+
+    Priority:
+      1. Reuse any images already present in the directory.
+      2. Download Vchitect/VBench_I2V dataset via huggingface_hub.
+      3. Generate synthetic 720×720 white PNG placeholders with Pillow.
+
+    Returns a list of image basenames (not full paths).
+    """
+    input_dir.mkdir(parents=True, exist_ok=True)
+    image_exts = {".png", ".jpg", ".jpeg", ".webp"}
+
+    existing = sorted(
+        p.name for p in input_dir.iterdir() if p.suffix.lower() in image_exts
+    )
+    if existing:
+        print(f"[setup] found {len(existing)} existing images in {input_dir}")
+        return existing
+
+    filenames = _try_download_vbench_i2v(input_dir)
+    if filenames:
+        return filenames
+
+    print(f"[setup] generating {num_images} synthetic 720×720 placeholder images ...")
+    return _generate_synthetic_images(input_dir, num_images)
+
+
+def generate_prompt_file(
+    output_path: Path,
+    image_filename: str,
+    positive_prompt: str | None = None,
+) -> None:
+    """
+    Write a single Wan 2.2 I2V ComfyUI prompt JSON to *output_path*.
+
+    *image_filename* is substituted into the LoadImage node (node "97").
+    *positive_prompt* overrides the default positive text if provided.
+    """
+    graph: dict[str, Any] = json.loads(json.dumps(_WAN22_I2V_GRAPH))
+    graph["97"]["inputs"]["image"] = image_filename
+    if positive_prompt is not None:
+        graph["130:107"]["inputs"]["text"] = positive_prompt
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps({"prompt": graph}, indent=2))
+
+
+def generate_prompt_files(
+    output_dir: Path,
+    input_dir: Path,
+    num_prompts: int = 50,
+    num_images: int = 20,
+    download_models: bool = False,
+    comfyui_base_dir: Path | None = None,
+) -> list[Path]:
+    """
+    Full Wan 2.2 I2V benchmark setup:
+
+      1. Optionally download model weights into *comfyui_base_dir*.
+      2. Prepare input images in *input_dir* (VBench I2V or synthetic).
+      3. Generate *num_prompts* prompt JSON files in *output_dir*, cycling
+         through the available images.
+
+    Returns the list of generated prompt file paths.
+    """
+    if download_models:
+        if comfyui_base_dir is None:
+            raise ValueError("--comfyui-base-dir is required when --download-models is set")
+        download_wan22_models(comfyui_base_dir)
+
+    image_filenames = prepare_input_images(input_dir, num_images=num_images)
+    if not image_filenames:
+        raise RuntimeError(f"No input images available in {input_dir}")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    generated: list[Path] = []
+    for i in range(num_prompts):
+        image_name = image_filenames[i % len(image_filenames)]
+        prompt_path = output_dir / f"wan22_i2v_prompt_{i:04d}.json"
+        generate_prompt_file(prompt_path, image_name)
+        generated.append(prompt_path)
+
+    print(f"[setup] generated {len(generated)} prompt files in {output_dir}")
+    print(f"[setup] example run:")
+    print(
+        f"  python benchmark_comfyui_serving.py"
+        f" --prompt-file {generated[0]}"
+        f" --num-requests {num_prompts}"
+    )
+    return generated
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -302,7 +707,46 @@ def parse_args() -> argparse.Namespace:
         choices=("/prompt", "/bench/prompt"),
         help="Submission endpoint.",
     )
-    p.add_argument("--prompt-file", type=Path, required=True, help="Path to prompt JSON.")
+    p.add_argument(
+        "--prompt-file",
+        type=Path,
+        default=None,
+        help="Path to prompt JSON. Required unless --generate-wan22-prompts is set.",
+    )
+    p.add_argument(
+        "--generate-wan22-prompts",
+        action="store_true",
+        help="Generate Wan 2.2 I2V prompt files (steps: prepare images, write JSONs) then exit.",
+    )
+    p.add_argument(
+        "--wan22-input-dir",
+        type=Path,
+        default=Path("inputs"),
+        help="Directory for benchmark input images (default: inputs/).",
+    )
+    p.add_argument(
+        "--wan22-output-dir",
+        type=Path,
+        default=Path("prompts/wan22_i2v"),
+        help="Directory where generated prompt JSON files are written (default: prompts/wan22_i2v/).",
+    )
+    p.add_argument(
+        "--wan22-num-images",
+        type=int,
+        default=20,
+        help="Number of synthetic images to generate when VBench download is unavailable (default: 20).",
+    )
+    p.add_argument(
+        "--download-models",
+        action="store_true",
+        help="Download Wan 2.2 model weights before generating prompts (requires --comfyui-base-dir).",
+    )
+    p.add_argument(
+        "--comfyui-base-dir",
+        type=Path,
+        default=None,
+        help="ComfyUI root directory used as the base for model downloads.",
+    )
     p.add_argument("--num-requests", type=int, default=50)
     p.add_argument("--max-concurrency", type=int, default=8)
     p.add_argument("--request-rate", type=float, default=0.0, help="Requests/sec. 0 = fire immediately.")
@@ -323,6 +767,8 @@ def parse_args() -> argparse.Namespace:
 
 
 async def async_main(args: argparse.Namespace) -> None:
+    if args.prompt_file is None:
+        raise SystemExit("error: --prompt-file is required (or use --generate-wan22-prompts to create one)")
     prompt_template = load_prompt_template(args.prompt_file)
     schedule = build_arrival_schedule(
         num_requests=args.num_requests,
@@ -367,6 +813,16 @@ async def async_main(args: argparse.Namespace) -> None:
 
 def main() -> None:
     args = parse_args()
+    if args.generate_wan22_prompts:
+        generate_prompt_files(
+            output_dir=args.wan22_output_dir,
+            input_dir=args.wan22_input_dir,
+            num_prompts=args.num_requests,
+            num_images=args.wan22_num_images,
+            download_models=args.download_models,
+            comfyui_base_dir=args.comfyui_base_dir,
+        )
+        return
     asyncio.run(async_main(args))
 
 
