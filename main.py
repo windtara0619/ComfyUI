@@ -293,7 +293,6 @@ def prompt_worker(q, server_instance):
     gc_collect_interval = 10.0
 
     while True:
-        benchmark_mode = args.benchmark_server_only
         timeout = 1000.0
         if need_gc:
             timeout = max(gc_collect_interval - (current_time - last_gc_collect), 0.0)
@@ -310,18 +309,28 @@ def prompt_worker(q, server_instance):
             extra_data = item[3].copy()
             for k in sensitive:
                 extra_data[k] = sensitive[k]
-            benchmark_mode = args.benchmark_server_only or extra_data.get("benchmark_server_only", False)
+            benchmark_mode = args.benchmark_server_only
 
             if not benchmark_mode:
                 asset_seeder.pause()
             e.execute(item[2], prompt_id, extra_data, item[4])
+            execution_time_s = time.perf_counter() - execution_start_time
 
             need_gc = True
+
+            queue_wait_ms = 0.0
+            created_at = extra_data.get("create_time")
+            if isinstance(created_at, int):
+                queue_wait_ms = max(0.0, execution_start_wall_ms - created_at)
 
             remove_sensitive = lambda prompt: prompt[:5] + prompt[6:]
             history_result = e.history_result
             if benchmark_mode:
                 history_result = {"outputs": {}, "meta": {}}
+            history_result["benchmark"] = {
+                "execution_ms": execution_time_s * 1000.0,
+                "queue_wait_ms": queue_wait_ms,
+            }
 
             q.task_done(item_id,
                         history_result,
@@ -333,7 +342,6 @@ def prompt_worker(q, server_instance):
                 server_instance.send_sync("executing", {"node": None, "prompt_id": prompt_id}, server_instance.client_id)
 
             current_time = time.perf_counter()
-            execution_time_s = current_time - execution_start_time
 
             # Log Time in a more readable way after 10 minutes
             if execution_time_s > 600:
@@ -341,14 +349,6 @@ def prompt_worker(q, server_instance):
                 logging.info(f"Prompt executed in {execution_time_formatted}")
             else:
                 logging.info("Prompt executed in {:.2f} seconds".format(execution_time_s))
-
-            queue_wait_ms = 0.0
-            created_at = extra_data.get("create_time")
-            if isinstance(created_at, int):
-                queue_wait_ms = max(0.0, execution_start_wall_ms - created_at)
-
-            if benchmark_mode:
-                server_instance.record_benchmark_result(prompt_id, e.success, execution_time_s * 1000.0, queue_wait_ms)
 
             if not benchmark_mode and not asset_seeder.is_disabled():
                 paths = _collect_output_absolute_paths(e.history_result)

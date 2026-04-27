@@ -396,7 +396,7 @@ async def wait_for_prompt_done(
     timeout_s: float,
 ) -> tuple[float | None, float | None]:
     """
-    Returns (queue_wait_ms, execution_ms) when available from history status messages.
+    Returns (queue_wait_ms, execution_ms) from history_item["benchmark"] written by the server.
     Falls back to (None, None) if unavailable.
     """
     deadline = time.perf_counter() + timeout_s
@@ -419,26 +419,13 @@ async def wait_for_prompt_done(
                 continue
 
             status = history_item.get("status", {})
-            status_str = status.get("status_str")
-            messages = status.get("messages", [])
-            if status_str not in ("success", "error"):
+            if status.get("status_str") not in ("success", "error"):
                 await asyncio.sleep(poll_interval_s)
                 continue
 
-            queue_wait_ms = None
-            execution_ms = None
-            try:
-                timestamp_map: dict[str, int] = {}
-                for event, msg in messages:
-                    if isinstance(msg, dict) and "timestamp" in msg:
-                        timestamp_map[event] = int(msg["timestamp"])
-                start_ts = timestamp_map.get("execution_start")
-                end_ts = timestamp_map.get("execution_success") or timestamp_map.get("execution_error")
-                if start_ts is not None and end_ts is not None:
-                    execution_ms = max(0.0, end_ts - start_ts)
-            except Exception:
-                execution_ms = None
-
+            benchmark = history_item.get("benchmark", {})
+            queue_wait_ms = benchmark.get("queue_wait_ms")
+            execution_ms = benchmark.get("execution_ms")
             return queue_wait_ms, execution_ms
 
         await asyncio.sleep(poll_interval_s)
