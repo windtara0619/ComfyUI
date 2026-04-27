@@ -25,10 +25,10 @@ Step 1 — Generate prompt files (downloads images, writes JSONs, then exits):
     --comfyui-base-dir /path/to/ComfyUI \\
     --num-requests 50
 
-  # Custom image/output dirs:
+  # Custom image/output dirs (input dir must be ComfyUI's input/ folder):
   python3 benchmarks/benchmark_comfyui_serving.py \\
     --generate-wan22-prompts \\
-    --wan22-input-dir /data/images \\
+    --wan22-input-dir /home/ubuntu/ComfyUI/input \\
     --wan22-output-dir /data/prompts/wan22 \\
     --wan22-num-images 30 \\
     --num-requests 50
@@ -715,8 +715,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--wan22-input-dir",
         type=Path,
-        default=Path("inputs"),
-        help="Directory for benchmark input images (default: inputs/).",
+        default=Path("input"),
+        help="Directory for benchmark input images. Must be ComfyUI's input/ folder so LoadImage can find them (default: input/).",
     )
     p.add_argument(
         "--wan22-output-dir",
