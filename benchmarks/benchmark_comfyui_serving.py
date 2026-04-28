@@ -316,6 +316,7 @@ class RequestResult:
     end_to_end_s: float
     queue_wait_ms: float | None
     execution_ms: float | None
+    node_timing_ms: dict[str, dict] | None
 
 
 def percentile(values: list[float], pct: float) -> float:
@@ -394,10 +395,10 @@ async def wait_for_prompt_done(
     prompt_id: str,
     poll_interval_s: float,
     timeout_s: float,
-) -> tuple[float | None, float | None]:
+) -> tuple[float | None, float | None, dict | None]:
     """
-    Returns (queue_wait_ms, execution_ms) from history_item["benchmark"] written by the server.
-    Falls back to (None, None) if unavailable.
+    Returns (queue_wait_ms, execution_ms, node_timing_ms) from history_item["benchmark"].
+    Falls back to (None, None, None) if unavailable.
     """
     deadline = time.perf_counter() + timeout_s
     history_url = f"{base_url}/history/{prompt_id}"
@@ -424,9 +425,11 @@ async def wait_for_prompt_done(
                 continue
 
             benchmark = history_item.get("benchmark", {})
-            queue_wait_ms = benchmark.get("queue_wait_ms")
-            execution_ms = benchmark.get("execution_ms")
-            return queue_wait_ms, execution_ms
+            return (
+                benchmark.get("queue_wait_ms"),
+                benchmark.get("execution_ms"),
+                benchmark.get("nodes"),
+            )
 
         await asyncio.sleep(poll_interval_s)
 
@@ -484,7 +487,7 @@ async def run_request(
                 timeout_s=args.request_timeout_s,
             )
 
-            queue_wait_ms, execution_ms = await wait_for_prompt_done(
+            queue_wait_ms, execution_ms, node_timing_ms = await wait_for_prompt_done(
                 session=session,
                 base_url=args.host,
                 prompt_id=prompt_id,
@@ -503,6 +506,7 @@ async def run_request(
                 end_to_end_s=finished_at - queued_at,
                 queue_wait_ms=queue_wait_ms,
                 execution_ms=execution_ms,
+                node_timing_ms=node_timing_ms,
             )
         except Exception as exc:
             finished_at = time.perf_counter()
@@ -517,6 +521,7 @@ async def run_request(
                 end_to_end_s=finished_at - queued_at,
                 queue_wait_ms=None,
                 execution_ms=None,
+                node_timing_ms=None,
             )
 
 
@@ -550,6 +555,19 @@ def print_summary(results: list[RequestResult], wall_s: float) -> None:
     if exec_ms:
         print(f"execution_mean_ms:  {statistics.mean(exec_ms):.2f}")
         print(f"execution_p95_ms:   {percentile(exec_ms, 95):.2f}")
+
+    # Per-node timing: aggregate execution_ms across all successful results.
+    node_totals: dict[str, list[float]] = {}
+    for r in success:
+        if not r.node_timing_ms:
+            continue
+        for node_id, info in r.node_timing_ms.items():
+            key = f"{info.get('class_type', 'unknown')} ({node_id})"
+            node_totals.setdefault(key, []).append(info.get("execution_ms", 0.0))
+    if node_totals:
+        print("\n--- Per-node execution time (mean ms across successful requests) ---")
+        for key, times in sorted(node_totals.items(), key=lambda x: -statistics.mean(x[1])):
+            print(f"  {key}: mean={statistics.mean(times):.1f}  p95={percentile(times, 95):.1f}  n={len(times)}")
 
     if fail:
         print("\nSample failures:")

@@ -326,11 +326,15 @@ def prompt_worker(q, server_instance):
             remove_sensitive = lambda prompt: prompt[:5] + prompt[6:]
             history_result = e.history_result
             if benchmark_mode:
-                history_result = {"outputs": {}, "meta": {}}
-            history_result["benchmark"] = {
-                "execution_ms": execution_time_s * 1000.0,
-                "queue_wait_ms": queue_wait_ms,
-            }
+                history_result = {
+                    "outputs": {},
+                    "meta": {},
+                    "benchmark": {
+                        "execution_ms": execution_time_s * 1000.0,
+                        "queue_wait_ms": queue_wait_ms,
+                        "nodes": e.node_timing_ms,
+                    },
+                }
 
             q.task_done(item_id,
                         history_result,
