@@ -262,12 +262,6 @@ def generate_prompt_files(
             raise ValueError("--comfyui-base-dir is required when --download-models is set")
         download_models(comfyui_base_dir, model, task)
 
-    # Skip prompt generation if files already exist.
-    existing = sorted(output_dir.glob(f"{model}_{task}_prompt_*.json"))
-    if existing:
-        print(f"[setup] found {len(existing)} existing prompt files in {output_dir}, skipping generation")
-        return existing
-
     image_filenames = prepare_input_images(
         input_dir,
         num_images=num_images,
