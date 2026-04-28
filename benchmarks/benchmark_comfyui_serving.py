@@ -51,6 +51,7 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
+from tqdm import tqdm
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -669,7 +670,14 @@ async def async_main(args: argparse.Namespace) -> None:
             )
             for i in range(args.num_requests)
         ]
-        results = await asyncio.gather(*tasks)
+        results = []
+        with tqdm(total=args.num_requests, unit="req", desc="benchmark") as pbar:
+            for coro in asyncio.as_completed(tasks):
+                result = await coro
+                results.append(result)
+                pbar.update(1)
+                if result.ok:
+                    pbar.set_postfix(succeeded=sum(r.ok for r in results))
     wall_s = time.perf_counter() - started
 
     print_summary(results, wall_s)
