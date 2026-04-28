@@ -144,13 +144,9 @@ def download_models(base_dir: Path, model: str, task: str) -> None:
 def _try_download_vbench_i2v(input_dir: Path) -> list[str]:
     """
     Download VBench I2V origin images from Google Drive via gdown (pip install gdown).
-    Returns image basenames placed in *input_dir*, or [] on failure.
+    Raises on any failure.
     """
-    try:
-        import gdown  # type: ignore
-    except ImportError:
-        print("[setup] gdown not available; skipping VBench download. Install with: pip install gdown")
-        return []
+    import gdown  # type: ignore; raises ImportError if not installed
 
     import zipfile
 
@@ -163,11 +159,10 @@ def _try_download_vbench_i2v(input_dir: Path) -> list[str]:
         with zipfile.ZipFile(zip_path, "r") as zf:
             zf.extractall(str(input_dir))
         zip_path.unlink()
-    except Exception as exc:
-        print(f"[setup] VBench I2V download failed: {exc}")
+    except Exception:
         if zip_path.exists():
             zip_path.unlink()
-        return []
+        raise
 
     image_exts = {".png", ".jpg", ".jpeg", ".webp"}
     filenames = sorted(
@@ -206,20 +201,14 @@ def prepare_input_images(
 ) -> list[str]:
     """
     Prepare benchmark input images in *input_dir*.
-
-    Priority:
-      1. Reuse any images already present in the directory.
-      2. Fetch from the source specified by *image_source* (e.g. "vbench_i2v").
-      3. Generate synthetic 720×720 white PNG placeholders with Pillow.
-
-    Returns a list of image basenames (not full paths).
+    For "vbench_i2v", downloads from Google Drive and raises on failure.
+    Falls back to synthetic images only when image_source is not "vbench_i2v".
+    Returns a list of image paths relative to *input_dir*.
     """
     input_dir.mkdir(parents=True, exist_ok=True)
 
     if image_source == "vbench_i2v":
-        filenames = _try_download_vbench_i2v(input_dir)
-        if filenames:
-            return filenames
+        return _try_download_vbench_i2v(input_dir)
 
     print(f"[setup] generating {num_images} synthetic 720×720 placeholder images ...")
     return _generate_synthetic_images(input_dir, num_images)
