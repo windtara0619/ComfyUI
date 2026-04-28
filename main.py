@@ -317,15 +317,8 @@ def prompt_worker(q, server_instance):
             need_gc = True
 
             remove_sensitive = lambda prompt: prompt[:5] + prompt[6:]
-            history_result = e.history_result
-            if benchmark_mode:
-                history_result = {
-                    "outputs": {},
-                    "meta": {},
-                }
-
             q.task_done(item_id,
-                        history_result,
+                        e.history_result,
                         status=execution.PromptQueue.ExecutionStatus(
                             status_str='success' if e.success else 'error',
                             completed=e.success,
@@ -344,7 +337,7 @@ def prompt_worker(q, server_instance):
                 logging.info("Prompt executed in {:.2f} seconds".format(execution_time))
 
             if benchmark_mode:
-                history_result["benchmark"] = {
+                e.history_result["benchmark"] = {
                     "execution_ms": execution_time * 1000.0,
                     "nodes": e.node_timing_ms,
                 }
