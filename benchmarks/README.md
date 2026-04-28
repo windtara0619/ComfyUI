@@ -85,26 +85,43 @@ python3 benchmarks/benchmark_comfyui_serving.py \
 ## Output
 
 ```
-benchmark: 100%|████████████| 50/50 [req, succeeded=50]
+benchmark: 100%|█████████████| 5/5 [02:58<00:00, 35.73s/req, succeeded=5]
 
 === ComfyUI Serving Benchmark Summary ===
-requests_total:   50
-requests_success: 50
+requests_total:   5
+requests_success: 5
 requests_failed:  0
-wall_time_s:      412.341
-throughput_req_s: 0.121
-latency_p50_s:    38.201
-latency_p90_s:    52.110
-latency_p95_s:    55.837
-latency_p99_s:    60.012
-latency_mean_s:   39.445
-latency_max_s:    61.203
-execution_mean_ms: 35210.44
-execution_p95_ms:  51200.11
+wall_time_s:      178.652
+throughput_req_s: 0.028
+latency_p50_s:    109.594
+latency_p90_s:    164.840
+latency_p95_s:    171.744
+latency_p99_s:    177.266
+latency_mean_s:   109.781
+latency_max_s:    178.647
+execution_mean_ms:  35465.21
+execution_p95_ms:   39685.06
 
 --- Per-node execution time (mean ms across successful requests) ---
-  KSampler (Advanced) (130:110): mean=18200.1  p95=22100.3  n=50
-  KSampler (Advanced) (130:111): mean=16900.4  p95=20800.7  n=50
-  VAEDecode (130:129):           mean=420.2    p95=510.1    n=50
-  ...
+  KSamplerAdvanced (130:110): mean=12827.5  p95=14264.0  n=5
+  KSamplerAdvanced (130:111): mean=12726.4  p95=13822.2  n=5
+  VAEDecode (130:129): mean=3439.0  p95=3467.6  n=5
+  SaveVideo (108): mean=2844.7  p95=3280.0  n=5
+  WanImageToVideo (130:128): mean=2367.7  p95=2595.9  n=5
+  CLIPTextEncode (130:125): mean=1785.0  p95=1785.0  n=1
+  CLIPLoader (130:105): mean=700.7  p95=700.7  n=1
+  LoadImage (97): mean=518.4  p95=970.0  n=5
+  VAELoader (130:106): mean=507.7  p95=507.7  n=1
+  CLIPTextEncode (130:107): mean=223.4  p95=223.4  n=1
+  UNETLoader (130:122): mean=122.2  p95=122.2  n=1
+  LoraLoaderModelOnly (130:126): mean=68.1  p95=68.1  n=1
+  UNETLoader (130:123): mean=65.9  p95=65.9  n=1
+  LoraLoaderModelOnly (130:127): mean=36.2  p95=36.2  n=1
+  ModelSamplingSD3 (130:109): mean=1.0  p95=1.0  n=1
+  ModelSamplingSD3 (130:124): mean=0.9  p95=0.9  n=1
+  CreateVideo (130:117): mean=0.7  p95=1.1  n=5
 ```
+
+> **Note:** Nodes with `n=1` (e.g. model loaders) are cached by ComfyUI after
+> the first request and skipped in subsequent executions, so they only appear
+> once across the benchmark run.
