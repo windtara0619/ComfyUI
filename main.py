@@ -313,7 +313,6 @@ def prompt_worker(q, server_instance):
             if not benchmark_mode:
                 asset_seeder.pause()
             e.execute(item[2], prompt_id, extra_data, item[4])
-            execution_time_s = time.perf_counter() - execution_start_time
 
             need_gc = True
 
@@ -323,10 +322,6 @@ def prompt_worker(q, server_instance):
                 history_result = {
                     "outputs": {},
                     "meta": {},
-                    "benchmark": {
-                        "execution_ms": execution_time_s * 1000.0,
-                        "nodes": e.node_timing_ms,
-                    },
                 }
 
             q.task_done(item_id,
@@ -339,13 +334,20 @@ def prompt_worker(q, server_instance):
                 server_instance.send_sync("executing", {"node": None, "prompt_id": prompt_id}, server_instance.client_id)
 
             current_time = time.perf_counter()
+            execution_time = current_time - execution_start_time
 
             # Log Time in a more readable way after 10 minutes
-            if execution_time_s > 600:
-                execution_time_formatted = time.strftime("%H:%M:%S", time.gmtime(execution_time_s))
+            if execution_time > 600:
+                execution_time_formatted = time.strftime("%H:%M:%S", time.gmtime(execution_time))
                 logging.info(f"Prompt executed in {execution_time_formatted}")
             else:
-                logging.info("Prompt executed in {:.2f} seconds".format(execution_time_s))
+                logging.info("Prompt executed in {:.2f} seconds".format(execution_time))
+
+            if benchmark_mode:
+                history_result["benchmark"] = {
+                    "execution_ms": execution_time * 1000.0,
+                    "nodes": e.node_timing_ms,
+                }
 
             if not benchmark_mode and not asset_seeder.is_disabled():
                 paths = _collect_output_absolute_paths(e.history_result)
