@@ -310,8 +310,7 @@ def prompt_worker(q, server_instance):
                 extra_data[k] = sensitive[k]
             benchmark_mode = args.benchmark_server_only
 
-            if not benchmark_mode:
-                asset_seeder.pause()
+            asset_seeder.pause()
             e.execute(item[2], prompt_id, extra_data, item[4])
 
             need_gc = True
@@ -342,7 +341,7 @@ def prompt_worker(q, server_instance):
                     "nodes": e.node_timing_ms,
                 }
 
-            if not benchmark_mode and not asset_seeder.is_disabled():
+            if not asset_seeder.is_disabled():
                 paths = _collect_output_absolute_paths(e.history_result)
                 register_output_files(paths, job_id=prompt_id)
 
@@ -368,10 +367,9 @@ def prompt_worker(q, server_instance):
                 need_gc = False
                 hook_breaker_ac10a0.restore_functions()
 
-                if not benchmark_mode and not asset_seeder.is_disabled():
+                if not asset_seeder.is_disabled():
                     asset_seeder.enqueue_enrich(roots=("output",), compute_hashes=True)
-                if not benchmark_mode:
-                    asset_seeder.resume()
+                asset_seeder.resume()
 
 
 async def run(server_instance, address='', port=8188, verbose=True, call_on_start=None):
