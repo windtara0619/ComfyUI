@@ -315,6 +315,12 @@ def prompt_worker(q, server_instance):
 
             need_gc = True
 
+            if benchmark_mode:
+                e.history_result["benchmark"] = {
+                    "execution_ms": (time.perf_counter() - execution_start_time) * 1000.0,
+                    "nodes": e.node_timing_ms,
+                }
+
             remove_sensitive = lambda prompt: prompt[:5] + prompt[6:]
             q.task_done(item_id,
                         e.history_result,
@@ -334,12 +340,6 @@ def prompt_worker(q, server_instance):
                 logging.info(f"Prompt executed in {execution_time_formatted}")
             else:
                 logging.info("Prompt executed in {:.2f} seconds".format(execution_time))
-
-            if benchmark_mode:
-                e.history_result["benchmark"] = {
-                    "execution_ms": execution_time * 1000.0,
-                    "nodes": e.node_timing_ms,
-                }
 
             if not asset_seeder.is_disabled():
                 paths = _collect_output_absolute_paths(e.history_result)
