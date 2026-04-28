@@ -314,7 +314,6 @@ class RequestResult:
     started_at: float
     finished_at: float
     end_to_end_s: float
-    queue_wait_ms: float | None
     execution_ms: float | None
     node_timing_ms: dict[str, dict] | None
 
@@ -395,10 +394,10 @@ async def wait_for_prompt_done(
     prompt_id: str,
     poll_interval_s: float,
     timeout_s: float,
-) -> tuple[float | None, float | None, dict | None]:
+) -> tuple[float | None, dict | None]:
     """
-    Returns (queue_wait_ms, execution_ms, node_timing_ms) from history_item["benchmark"].
-    Falls back to (None, None, None) if unavailable.
+    Returns (execution_ms, node_timing_ms) from history_item["benchmark"].
+    Falls back to (None, None) if unavailable.
     """
     deadline = time.perf_counter() + timeout_s
     history_url = f"{base_url}/history/{prompt_id}"
@@ -426,7 +425,6 @@ async def wait_for_prompt_done(
 
             benchmark = history_item.get("benchmark", {})
             return (
-                benchmark.get("queue_wait_ms"),
                 benchmark.get("execution_ms"),
                 benchmark.get("nodes"),
             )
@@ -487,7 +485,7 @@ async def run_request(
                 timeout_s=args.request_timeout_s,
             )
 
-            queue_wait_ms, execution_ms, node_timing_ms = await wait_for_prompt_done(
+            execution_ms, node_timing_ms = await wait_for_prompt_done(
                 session=session,
                 base_url=args.host,
                 prompt_id=prompt_id,
@@ -504,7 +502,6 @@ async def run_request(
                 started_at=started_at,
                 finished_at=finished_at,
                 end_to_end_s=finished_at - queued_at,
-                queue_wait_ms=queue_wait_ms,
                 execution_ms=execution_ms,
                 node_timing_ms=node_timing_ms,
             )
@@ -519,7 +516,6 @@ async def run_request(
                 started_at=started_at,
                 finished_at=finished_at,
                 end_to_end_s=finished_at - queued_at,
-                queue_wait_ms=None,
                 execution_ms=None,
                 node_timing_ms=None,
             )
@@ -529,7 +525,6 @@ def print_summary(results: list[RequestResult], wall_s: float) -> None:
     success = [r for r in results if r.ok]
     fail = [r for r in results if not r.ok]
     lat_s = [r.end_to_end_s for r in success]
-    queue_wait_ms = [r.queue_wait_ms for r in success if r.queue_wait_ms is not None]
     exec_ms = [r.execution_ms for r in success if r.execution_ms is not None]
 
     throughput = (len(success) / wall_s) if wall_s > 0 else 0.0
@@ -547,10 +542,6 @@ def print_summary(results: list[RequestResult], wall_s: float) -> None:
         print(f"latency_p99_s:    {percentile(lat_s, 99):.3f}")
         print(f"latency_mean_s:   {statistics.mean(lat_s):.3f}")
         print(f"latency_max_s:    {max(lat_s):.3f}")
-
-    if queue_wait_ms:
-        print(f"queue_wait_mean_ms: {statistics.mean(queue_wait_ms):.2f}")
-        print(f"queue_wait_p95_ms:  {percentile(queue_wait_ms, 95):.2f}")
 
     if exec_ms:
         print(f"execution_mean_ms:  {statistics.mean(exec_ms):.2f}")

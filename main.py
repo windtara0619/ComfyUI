@@ -301,7 +301,6 @@ def prompt_worker(q, server_instance):
         if queue_item is not None:
             item, item_id = queue_item
             execution_start_time = time.perf_counter()
-            execution_start_wall_ms = int(time.time() * 1000)
             prompt_id = item[1]
             server_instance.last_prompt_id = prompt_id
 
@@ -318,11 +317,6 @@ def prompt_worker(q, server_instance):
 
             need_gc = True
 
-            queue_wait_ms = 0.0
-            created_at = extra_data.get("create_time")
-            if isinstance(created_at, int):
-                queue_wait_ms = max(0.0, execution_start_wall_ms - created_at)
-
             remove_sensitive = lambda prompt: prompt[:5] + prompt[6:]
             history_result = e.history_result
             if benchmark_mode:
@@ -331,7 +325,6 @@ def prompt_worker(q, server_instance):
                     "meta": {},
                     "benchmark": {
                         "execution_ms": execution_time_s * 1000.0,
-                        "queue_wait_ms": queue_wait_ms,
                         "nodes": e.node_timing_ms,
                     },
                 }
